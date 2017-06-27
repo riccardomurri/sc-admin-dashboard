@@ -20,7 +20,11 @@
 # 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 __docformat__ = 'reStructuredText'
-__author__ = 'Antonio Messina <antonio.s.messina@gmail.com>'
+__author__ = ', '.join([
+    'Antonio Messina <antonio.s.messina@gmail.com>',
+    'Riccardo Murri <riccardo.murri@gmail.com>',
+])
+
 
 def to_bib(num):
     """Convert num to a reasonable power of 2.
@@ -52,8 +56,90 @@ def to_bib(num):
         if absnum >= thr:
             return (sign*float(absnum)/thr, unit)
     return (float(num), 'bytes')
-            
-    
+
+
+def get_project_id(response):
+    """
+    Return the project UUID from a Neutron API response dictionary.
+
+    Depending on server and client version and/or configuration, the project
+    (formerly called: "tenant") ID is stored in attributes ``project_id`` or
+    ``tenant_id``. Try both (in this order) and raise a ``KeyError`` if none is
+    present in the passed dictionary.
+    """
+    if 'project_id' in response:
+        return response['project_id']
+    elif 'tenant_id' in response:
+        return response['tenant_id']
+    else:
+        raise KeyError(
+            "No `project_id` nor `tenant_id` in response `{0}`"
+            .format(response))
+
+
+def find_security_group_by_name(client, project_id, name):
+    """
+    Return dict describing the named Neutron security group.
+
+    :raise KeyError: if no security group with the given name exists in the project.
+    :raise RuntimeError: if multiple security groups match.
+    """
+    secgroups = find_security_groups(client, project_id, name=name)
+    if not secgroups:
+        raise KeyError("No security group by the name `{0}`".format(name))
+    if len(secgroups) > 1:
+        raise RuntimeError(
+            "Multiple matches for security group '{0}': {1}"
+            .format(name, [sg['id'] for sg in secgroups]))
+    return secgroups[0]
+
+
+def _filter_neutron_list_results(fn, objname, id_filter_fn=(lambda obj: True), **clauses):
+    """
+    Return matching items from a Neutron 'list' API call.
+
+    :param fn: Neutron client ``list_*`` function to call.
+    :param objname: Key identifying the root object in the JSON response.
+    :param id_filter_fn: Pre-filter: clauses will be checked only for objects where this returns ``True``
+    :param clauses: Any additional keyword argument will filter results by imposing that the specified key/value pair appears in the object.
+    """
+    response = fn()
+    if objname not in response:
+        raise RuntimeError(
+            "Unexpected response from Neutron client's"
+            " `{0}()` call: {1}".format(fn.__name__, response))
+    objs = response[objname]
+    if not objs:
+        return []
+    matching = [
+        obj for obj in objs
+        if id_filter_fn(obj)
+        and all([obj[key] == value for key, value in clauses.iteritems()])
+    ]
+    return matching
+
+
+def find_security_groups(client, project_id, **clauses):
+    """
+    Return security groups in the given project matching all the equality clauses.
+    """
+    def _target_project_id(obj):
+        return get_project_id(obj) == project_id
+    return _filter_neutron_list_results(
+        client.list_security_groups, 'security_groups',
+        _target_project_id, **clauses)
+
+
+def find_security_group_rules(client, secgroup_id, **clauses):
+    """
+    Return rules in the given security group matching all the equality clauses.
+    """
+    def _target_project_id(obj):
+        return obj['security_group_id'] == secgroup_id
+    return _filter_neutron_list_results(
+        client.list_security_group_rules, 'security_group_rules',
+        _target_project_id, **clauses)
+
 
 if __name__ == "__main__":
     import doctest

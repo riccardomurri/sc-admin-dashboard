@@ -266,6 +266,52 @@ class Projects(object):
                 'floatingip': 0,  # see: https://trello.com/c/ywH3WR8c/132-newly-created-project-have-a-10-floating-ips-quota-instead-of-0
             },
         })
+        # the following only works with Nova API v1.1
+        #default_sg = self.nova.security_groups.find(name="default")
+        #self.nova.security_group_rules.create(default_sg.id, ip_protocol="tcp", from_port=22, to_port=22)
+        try:
+            response = self.neutron.create_security_group({
+                'security_group': {
+                    #'project_id': project.id,
+                    'tenant_id': project.id,
+                    'name': 'default',
+                    'description': "Default security group",
+                }
+            })
+            if 'security_group' not in response:
+                raise RuntimeError(
+                    "Unexpected response from Neutron client's"
+                    " `create_security_group()` call: {0}".format(response))
+            default_sg = response['security_group']
+        except Conflict:
+            # security group already exists, fetch it
+            default_sg = find_security_group_by_name(self.neutron, project.id, 'default')
+        default_sg_id = default_sg['id']
+        for desc, ip_range in [
+                # see: http://www.id.uzh.ch/de/dl/dn/konfiguration/ip/ip-adressraeume.html
+                ("Allow SSH connections from UZH wired network",          '130.60.0.0/16'),
+                ("Allow SSH connections from UZH wireless & VPN network", '89.206.64.0/18'),
+                ("Allow SSH connections from Science Cloud VMs",          '172.23.0.0/16'),
+                ("Allow SSH connections from EduRoam",                    '192.41.132.0/22'),
+                ("Allow SSH connections from USZ",                        '144.200.0.0/16')
+        ]:
+            ssh_rule = find_security_group_rules(
+                self.neutron, default_sg_id,
+                direction='ingress', ethertype='IPv4', protocol='tcp',
+                port_range_min=22, port_range_max=22, remote_ip_prefix=ip_range)
+            if not ssh_rule:
+                self.neutron.create_security_group_rule({
+                    'security_group_rule': {
+                        'description': desc,
+                        'security_group_id': default_sg_id,
+                        'direction': 'ingress',
+                        'ethertype': 'IPv4',
+                        'protocol': 'tcp',
+                        'port_range_min': 22,
+                        'port_range_max': 22,
+                        'remote_ip_prefix': ip_range,
+                    }
+                })
         # all done, enable project
         self.keystone.projects.update(project, enabled=True)
         return project
